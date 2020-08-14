@@ -2,347 +2,332 @@ package xlsxt
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
-	"strings"
 
+	"github.com/360EntSecGroup-Skylar/excelize"
+	"github.com/SmallTianTian/go-tools/slice"
 	"github.com/aymerick/raymond"
-	"github.com/tealeg/xlsx"
+)
+
+const (
+	randerCacheKey = "_xlsxt_rander_cache"
+	sheetDataKey   = "_xlsxt_sheet_data"
 )
 
 var (
-	rgx              = regexp.MustCompile(`\{\{\s*(\w+)\.\w+\s*\}\}`)
-	rangeRgx         = regexp.MustCompile(`\{\{\s*range\s+(\w+)\s*\}\}`)
-	rangeEndRgx      = regexp.MustCompile(`\{\{\s*end\s*\}\}`)
-	defaultCellStyle = xlsx.MakeStringStyle(xlsx.DefaultFont(), xlsx.DefaultFill(), xlsx.DefaultAlignment(), xlsx.DefaultBorder())
-	nullCell         = &streamCell{
-		CellStyle: &defaultCellStyle,
-		CellType:  xlsx.CellTypeString.Ptr(),
-	}
+	rangeRgx    = regexp.MustCompile(`{{range (\w*)}}`)
+	rowRangeRgx = regexp.MustCompile(`{{rowRange (\w*)}}`)
+)
+
+// 错误码从 20000 开始
+var (
+	NotStringKeyMapValue = errors.New("code: 20000, Not a string key map value.")
+	NotMatchRangeEnd     = errors.New("code: 20001, Range not match end.")
+	RenderCancel         = errors.New("code: 20002, range is cancel.")
 )
 
 type Xlsxt struct {
-	file *xlsx.File
+	file *excelize.File
 	buf  bytes.Buffer
 }
 
-type streamCell struct {
-	CellData  string
-	CellStyle *xlsx.StreamStyle
-	CellType  *xlsx.CellType
-}
-
-func (sc *streamCell) ToXlsx() xlsx.StreamCell {
-	return xlsx.NewStreamCell(sc.CellData, *sc.CellStyle, *sc.CellType)
-}
-
 func NewFromBinary(content []byte) (res *Xlsxt, err error) {
-	var file *xlsx.File
-	if file, err = xlsx.OpenBinary(content); err == nil {
-		res = NewFromXlsx(file)
+	f, err := excelize.OpenReader(bytes.NewReader(content))
+	if err != nil {
+		return nil, err
 	}
-	return
-}
-
-func NewFromXlsx(file *xlsx.File) *Xlsxt {
-	return &Xlsxt{file: file}
+	return &Xlsxt{file: f}, nil
 }
 
 // Render renders report and stores it in a struct
-func (m *Xlsxt) Render(in interface{}) error {
-	return m.defaultRender(in)
-}
-
-func (m *Xlsxt) defaultRender(in interface{}) error {
-	streamBuild := xlsx.NewStreamFileBuilder(&m.buf)
-
-	data := make([]map[int]chan []*streamCell, len(m.file.Sheets))
-	defer func() {
-		for _, item := range data {
-			for _, v := range item {
-				close(v)
-			}
-		}
-	}()
-
-	for i, item := range m.file.Sheets {
-		max, runner, styles := prepareRender(m.file, i, in)
-		styles = append(styles, *nullCell.CellStyle)
-		data[i] = map[int]chan []*streamCell{max: runner}
-
-		firstLines := fillStreamCell(<-runner, max)
-		strs := make([]string, len(firstLines))
-		meta := make([]*xlsx.CellMetadata, len(firstLines))
-		for i, item := range firstLines {
-			strs[i] = item.CellData
-			mt := xlsx.MakeCellMetadata(*item.CellType, *item.CellStyle)
-			meta[i] = &mt
-		}
-		if err := streamBuild.AddSheetWithDefaultColumnMetadata(item.Name, strs, meta); err != nil {
-			return err
-		}
-		streamBuild.AddStreamStyleList(styles)
+func (m *Xlsxt) Render(ctx context.Context, in interface{}) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	sb, err := streamBuild.Build()
+	skm, err := toStringKeyMap(in)
 	if err != nil {
 		return err
 	}
 
-	for sheetIndex, sheetData := range data {
-		if sheetIndex != 0 {
-			if err = sb.NextSheet(); err != nil {
-				return err
-			}
-		}
-		for max, sheetChan := range sheetData {
-			for {
-				rowCells := <-sheetChan
-				if rowCells == nil {
-					break
-				}
-
-				fillCells := fillStreamCell(rowCells, max)
-				formatCells := make([]xlsx.StreamCell, len(fillCells))
-				for i, cell := range fillCells {
-					formatCells[i] = cell.ToXlsx()
-				}
-
-				if err = sb.WriteS(formatCells); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return sb.Close()
+	m.buf, err = defaultRender(ctx, m.file, skm)
+	return
 }
 
 func (m *Xlsxt) Result() bytes.Buffer {
 	return m.buf
 }
 
-func getCellStyle(cell *xlsx.Cell) *xlsx.StreamStyle {
-	numberFmtId := 0
-	font := cell.GetStyle().Font
-	fill := cell.GetStyle().Fill
-	alig := cell.GetStyle().Alignment
-	bord := cell.GetStyle().Border
-	style := xlsx.MakeStyle(numberFmtId, &font, &fill, &alig, &bord)
-	return &style
+func defaultRender(ctx context.Context, temp *excelize.File, data map[string]interface{}) (buf bytes.Buffer, err error) {
+	f := excelize.NewFile()
+	sns := temp.GetSheetList()
+	ctx = context.WithValue(ctx, randerCacheKey, make(map[string]*raymond.Template))
+	for _, sn := range sns {
+		var (
+			baseColWidth     excelize.BaseColWidth
+			defaultColWidth  excelize.DefaultColWidth
+			defaultRowHeight excelize.DefaultRowHeight
+			customHeight     excelize.CustomHeight
+			zeroHeight       excelize.ZeroHeight
+			thickTop         excelize.ThickTop
+			thickBottom      excelize.ThickBottom
+		)
+		if err = temp.GetSheetFormatPr(sn, &baseColWidth, &defaultColWidth, &defaultRowHeight, &customHeight, &zeroHeight, &thickTop, &thickBottom); err != nil {
+			return
+		}
+		var ssw *excelize.StreamWriter
+		if ssw, err = f.NewStreamWriter(sn); err != nil {
+			return
+		}
+		if err = f.SetSheetFormatPr(sn, &baseColWidth, &defaultColWidth, &defaultRowHeight, &customHeight, &zeroHeight, &thickTop, &thickBottom); err != nil {
+			return
+		}
+		// TODO get all rows height?
+		var rowsData [][]string
+		if rowsData, err = temp.GetRows(sn); err != nil {
+			return
+		}
+
+		var sheetData map[string]interface{}
+		if sheetData, err = getSheetData(data, sn, sns); err != nil {
+			return
+		}
+		sheetCtx := context.WithValue(ctx, sheetDataKey, sheetData)
+		// remove current sheet data in other sheet
+		delete(data, sn)
+		if _, err = renderRows(sheetCtx, ssw, rowsData, 0); err != nil {
+			return
+		}
+		if err = ssw.Flush(); err != nil {
+			return
+		}
+
+	}
+	b, e := f.WriteToBuffer()
+	return *b, e
 }
 
-func render(rows []*xlsx.Row, orgion map[string]interface{}, styles [][]*xlsx.StreamStyle, pipline chan []*streamCell) int {
-	lineLen := 0
-	for i := 0; i < len(rows); i++ {
-		rangeProp := getRangeProp(rows[i])
-		if rangeProp != "" {
-			end := getRangeEndIndex(rows[i+1:], rangeProp)
-			rangeData := getRangeCtx(orgion, rangeProp)
-			for _, rd := range rangeData {
-				rl := 0
-				for end-rl > 0 {
-					rl += render(rows[i+1:i+1+end], rd, styles[i+1:], pipline)
-				}
-			}
-			i += end + 1
-			lineLen += end + 1
-		} else {
-			cells := make([]*streamCell, len(rows[i].Cells))
-			for j, item := range rows[i].Cells {
-				tp := item.Type()
-				cells[j] = &streamCell{
-					CellData:  item.Value,
-					CellStyle: styles[i][j],
-					CellType:  &tp,
-				}
-			}
-
-			lineCells := make([]*streamCell, len(cells))
-			for i, c := range cells {
-				if lc, err := renderCell(c, orgion); err != nil {
-					panic(err)
-				} else {
-					lineCells[i] = lc
-				}
-
-			}
-			pipline <- lineCells
-			lineLen += 1
+func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]string, rowOffset int) (renderLine int, err error) {
+	var axis string
+	for w := 0; w < len(rowsData); {
+		if ctx.Err() != nil {
+			return 0, RenderCancel
 		}
+
+		if axis, err = excelize.CoordinatesToCellName(1, w+1+rowOffset); err != nil {
+			return
+		}
+		cells := rowsData[w]
+		// empty line
+		if len(cells) == 0 {
+			write.SetRow(axis, nil)
+			renderLine++
+			w++
+			continue
+		}
+
+		// range begin
+		if ms := rangeRgx.FindStringSubmatch(cells[0]); len(ms) == 2 {
+			rangeKey := ms[1]
+			end := getEndRowIndex(rowsData[w+1:])
+			// can't find end
+			if end == -1 {
+				return 0, NotMatchRangeEnd
+			}
+			// skip range line
+			// no valid render line
+			if end == 1 {
+				w += 2
+				continue
+			}
+			if rl, err := renderRangeRow(ctx, write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
+				return 0, nil
+			} else {
+				renderLine += rl
+				rowOffset += rl
+			}
+			w += end
+			w++
+			continue
+		}
+
+		// no row range
+		rowResultData := make([]interface{}, 0, len(rowsData[w]))
+		for _, item := range rowsData[w] {
+			var cellResult *excelize.Cell
+			if cellResult, err = renderCells(ctx, item); err != nil {
+				return
+			}
+			rowResultData = append(rowResultData, cellResult)
+		}
+		write.SetRow(axis, rowResultData)
+		renderLine++
+		w++
 	}
-	return lineLen
-}
-
-func prepareRender(file *xlsx.File, index int, in interface{}) (maxCell int, data chan []*streamCell, style []xlsx.StreamStyle) {
-	sheet := file.Sheets[index]
-	styles := make([][]*xlsx.StreamStyle, len(file.Sheets[index].Rows))
-
-	// get sheet max cells on a line
-	// get all cell style
-	for i, row := range sheet.Rows {
-		if len(row.Cells) > maxCell {
-			maxCell = len(row.Cells)
-		}
-
-		lineStyle := make([]*xlsx.StreamStyle, len(row.Cells))
-		for j, cell := range row.Cells {
-			st := getCellStyle(cell)
-			lineStyle[j] = st
-
-			style = append(style, *st)
-		}
-		styles[i] = lineStyle
-	}
-
-	originData := getCtx(in, index)
-	data = make(chan []*streamCell, 100*1000)
-	go func() {
-		render(sheet.Rows, originData, styles, data)
-		data <- nil
-	}()
 	return
 }
 
-func getRangeEndIndex(rows []*xlsx.Row, prop string) int {
-	expect := fmt.Sprintf("{{end %s}}", prop)
+func renderRangeRow(ctx context.Context, write *excelize.StreamWriter, rangeKey string, rowsData [][]string, offset int) (renderLine int, err error) {
+	sD := ctx.Value(sheetDataKey).(map[string]interface{})
+	rangeD, has := sD[rangeKey]
+	// no valid render data
+	if !has {
+		return len(rowsData), nil
+	}
+	ori := excludeKeyMap(sD, rangeKey)
 
-	var nesting int
-	for idx := 0; idx < len(rows); idx++ {
-		cellValue := rows[idx].Cells[0].Value
-		if cellValue == expect {
-			return idx
-		}
+	dc := getChanKeyMap(rangeD)
+	for i := 0; ; i++ {
+		if v, ok := <-dc; !ok {
+			break
+		} else {
+			ctx = context.WithValue(ctx, sheetDataKey, mergeMap(ori, v))
 
-		if len(rows[idx].Cells) == 0 {
-			continue
-		}
-
-		if rangeEndRgx.MatchString(cellValue) {
-			if nesting == 0 {
-				return idx
+			l, err := renderRows(ctx, write, rowsData, offset)
+			if err != nil {
+				return 0, nil
 			}
-
-			nesting--
-			continue
-		}
-
-		if rangeRgx.MatchString(cellValue) {
-			nesting++
+			renderLine += l
+			offset += l
 		}
 	}
+	return
+}
 
+func renderCells(ctx context.Context, tlp string) (a *excelize.Cell, err error) {
+	cacheRender := ctx.Value(randerCacheKey).(map[string]*raymond.Template)
+	sD := ctx.Value(sheetDataKey).(map[string]interface{})
+	defer func() {
+		if e := recover(); e != nil {
+			err = fmt.Errorf("code: 20002, UNKNOW ERR. %v", e)
+		}
+	}()
+	if _, in := cacheRender[tlp]; !in {
+		cacheRender[tlp] = raymond.MustParse(tlp)
+	}
+	tp := cacheRender[tlp].Clone()
+	var v string
+	if v, err = tp.Exec(sD); err != nil {
+		return
+	}
+	return &excelize.Cell{Value: v}, nil
+}
+
+func getEndRowIndex(rowsData [][]string) int {
+	var inStack int
+	for index, v := range rowsData {
+		if len(v) == 0 {
+			continue
+		}
+		fV := v[0]
+		if fV == "{{end}}" {
+			if inStack == 0 {
+				// {{range }}
+				return index + 1
+			}
+			inStack--
+			continue
+		}
+		if rangeRgx.MatchString(fV) {
+			inStack++
+		}
+	}
 	return -1
 }
 
-func renderCell(cell *streamCell, data map[string]interface{}) (result *streamCell, err error) {
-	tpl := strings.Replace(cell.CellData, "{{", "{{{", -1)
-	tpl = strings.Replace(tpl, "}}", "}}}", -1)
-	var out string
-
-	if count := strings.Count(tpl, "{{{"); count > 0 {
-		for i := 0; i < count; i++ {
-			l := strings.LastIndex(tpl, "{{{")
-			s := strings.Index(tpl, "}}}") + len("}}}")
-			tp := tpl[l:s]
-			var template *raymond.Template
-			if template, err = raymond.Parse(tp); err != nil {
-				return
-			}
-			if out, err = template.Exec(data); err != nil {
-				return
-			}
-			tpl = fmt.Sprintf("%s \"%s\"%s", tpl[:l], out, tpl[s:])
-		}
-	} else {
-		var template *raymond.Template
-		if template, err = raymond.Parse(tpl); err != nil {
-			return
-		}
-		if out, err = template.Exec(data); err != nil {
-			return
-		}
+func getSheetData(in map[string]interface{}, sn string, allSN []string) (result map[string]interface{}, err error) {
+	if result, err = toStringKeyMap(in[sn]); err != nil {
+		return
 	}
 
-	return &streamCell{
-		CellData:  out,
-		CellStyle: cell.CellStyle,
-		CellType:  cell.CellType,
-	}, nil
+	noOtherSheetName := excludeKeyMap(in, allSN...)
+	return mergeMap(result, noOtherSheetName), nil
 }
 
-func fillStreamCell(origin []*streamCell, max int) (result []*streamCell) {
-	switch {
-	case len(origin) == max:
-		result = origin
-	case len(origin) < max:
-		result = make([]*streamCell, len(origin), max)
-		copy(result, origin)
-		for max-len(result) > 0 {
-			result = append(result, nullCell)
-		}
-	case len(origin) > max:
-		panic("StreamCell len > max.")
-	}
-	return
-}
-
-func getCtx(in interface{}, i int) map[string]interface{} {
-	if ctx, ok := in.(map[string]interface{}); ok {
-		return ctx
-	}
-	if ctxSlice, ok := in.([]interface{}); ok {
-		if len(ctxSlice) > i {
-			_ctx := ctxSlice[i]
-			if ctx, ok := _ctx.(map[string]interface{}); ok {
-				return ctx
-			}
-		}
-		return nil
-	}
-	return nil
-}
-
-func getRangeCtx(ctx map[string]interface{}, prop string) []map[string]interface{} {
-	val, ok := ctx[prop]
-	if !ok {
-		return nil
-	}
-
-	var propCtx []interface{}
-	if propCtx, ok = val.([]interface{}); !ok {
-		return nil
-	}
-	result := make([]map[string]interface{}, 0, len(propCtx))
-	for _, inter := range propCtx {
-		if mp, ok := inter.(map[string]interface{}); ok {
-			result = append(result, mp)
+func excludeKeyMap(m map[string]interface{}, key ...string) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range m {
+		if !slice.StringInSlice(key, k) {
+			result[k] = v
 		}
 	}
-
 	return result
 }
 
-func mergeCtx(local, global map[string]interface{}) map[string]interface{} {
-	ctx := make(map[string]interface{})
-
-	for k, v := range global {
-		ctx[k] = v
+func mergeMap(dist, fresh map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range dist {
+		result[k] = v
 	}
-
-	for k, v := range local {
-		ctx[k] = v
+	for k, v := range fresh {
+		result[k] = v
 	}
-
-	return ctx
+	return result
 }
 
-func getRangeProp(in *xlsx.Row) string {
-	if len(in.Cells) != 0 {
-		match := rangeRgx.FindAllStringSubmatch(in.Cells[0].Value, -1)
-		if match != nil {
-			return match[0][1]
-		}
+func getChanKeyMap(v interface{}) <-chan map[string]interface{} {
+	if ckm, ok := v.(chan map[string]interface{}); ok {
+		return ckm
+	}
+	c := make(chan map[string]interface{})
+	if akm, ok := v.([]map[string]interface{}); ok {
+		go func() {
+			for _, v := range akm {
+				c <- v
+			}
+			close(c)
+		}()
+		return c
 	}
 
-	return ""
+	var (
+		rt reflect.Type
+		rv reflect.Value
+	)
+NoPtr:
+	rt = reflect.TypeOf(v)
+	rv = reflect.ValueOf(v)
+	if rt.Kind() == reflect.Ptr && rv.CanAddr() {
+		v = rv.Addr().Interface()
+		goto NoPtr
+	}
+
+	if rt.Kind() != reflect.Array && rt.Kind() != reflect.Chan && rt.Kind() != reflect.Slice {
+		close(c)
+		return c
+	}
+
+	if rt.Kind() == reflect.Chan {
+		go func() {
+			for {
+				if v, ok := rv.Recv(); ok {
+					if skm, err := toStringKeyMap(v.Interface()); err != nil {
+						break
+					} else {
+						c <- skm
+					}
+				} else {
+					break
+				}
+			}
+			close(c)
+		}()
+		return c
+	}
+
+	go func() {
+		l := rv.Len()
+		for i := 0; i < l; i++ {
+			if skm, err := toStringKeyMap(rv.Index(i).Interface()); err != nil {
+				break
+			} else {
+				c <- skm
+			}
+		}
+		close(c)
+	}()
+	return c
 }
