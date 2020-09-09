@@ -10,11 +10,11 @@ import (
 
 	"github.com/360EntSecGroup-Skylar/excelize"
 	"github.com/SmallTianTian/go-tools/slice"
-	"github.com/aymerick/raymond"
 )
 
 const (
-	randerCacheKey = "_xlsxt_rander_cache"
+	ctxCacheKey    = "_xlsxt_ctx"
+	renderCacheKey = "_xlsxt_render_cache"
 	sheetDataKey   = "_xlsxt_sheet_data"
 )
 
@@ -45,9 +45,7 @@ func NewFromBinary(content []byte) (res *Xlsxt, err error) {
 
 // Render renders report and stores it in a struct
 func (m *Xlsxt) Render(ctx context.Context, in interface{}) (err error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = context.WithValue(context.Background(), ctxCacheKey, ctx)
 	skm, err := toStringKeyMap(in)
 	if err != nil {
 		return err
@@ -64,7 +62,7 @@ func (m *Xlsxt) Result() bytes.Buffer {
 func defaultRender(ctx context.Context, temp *excelize.File, data map[string]interface{}) (buf bytes.Buffer, err error) {
 	f := excelize.NewFile()
 	sns := temp.GetSheetList()
-	ctx = context.WithValue(ctx, randerCacheKey, make(map[string]*raymond.Template))
+	ctx = context.WithValue(ctx, renderCacheKey, make(map[string]*Parse))
 	for _, sn := range sns {
 		var (
 			baseColWidth     excelize.BaseColWidth
@@ -144,7 +142,7 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 				continue
 			}
 			if rl, err := renderRangeRow(ctx, write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
-				return 0, nil
+				return 0, err
 			} else {
 				renderLine += rl
 				rowOffset += rl
@@ -188,7 +186,7 @@ func renderRangeRow(ctx context.Context, write *excelize.StreamWriter, rangeKey 
 
 			l, err := renderRows(ctx, write, rowsData, offset)
 			if err != nil {
-				return 0, nil
+				return 0, err
 			}
 			renderLine += l
 			offset += l
@@ -198,7 +196,7 @@ func renderRangeRow(ctx context.Context, write *excelize.StreamWriter, rangeKey 
 }
 
 func renderCells(ctx context.Context, tlp string) (a *excelize.Cell, err error) {
-	cacheRender := ctx.Value(randerCacheKey).(map[string]*raymond.Template)
+	cacheRender := ctx.Value(renderCacheKey).(map[string]*Parse)
 	sD := ctx.Value(sheetDataKey).(map[string]interface{})
 	defer func() {
 		if e := recover(); e != nil {
@@ -206,11 +204,18 @@ func renderCells(ctx context.Context, tlp string) (a *excelize.Cell, err error) 
 		}
 	}()
 	if _, in := cacheRender[tlp]; !in {
-		cacheRender[tlp] = raymond.MustParse(tlp)
+		if cacheRender[tlp], err = NewParse(tlp); err != nil {
+			return
+		}
 	}
-	tp := cacheRender[tlp].Clone()
-	var v string
-	if v, err = tp.Exec(sD); err != nil {
+	tp := cacheRender[tlp]
+	var v interface{}
+
+	// reset ctx
+	if ctx.Value(ctxCacheKey) != nil {
+		ctx, _ = ctx.Value(ctxCacheKey).(context.Context)
+	}
+	if v, err = tp.Exec(ctx, sD); err != nil {
 		return
 	}
 	return &excelize.Cell{Value: v}, nil

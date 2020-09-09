@@ -3,10 +3,10 @@ package xlsxt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/360EntSecGroup-Skylar/excelize"
 )
@@ -37,6 +37,7 @@ func checkExcelHelper(data []byte, expect [][]string) error {
 		s, _ := row.Columns()
 		have = append(have, s)
 	}
+	// fmt.Println(have)
 	if len(have) != len(expect) {
 		return fmt.Errorf("Line not equal. Except %d != %d.", len(expect), len(have))
 	}
@@ -69,9 +70,7 @@ func map2MapChanHelper(data []map[string]interface{}) chan map[string]interface{
 	return c
 }
 
-func Test_Rander(t *testing.T) {
-	deadlinectx, c := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
-	c()
+func Test_RenderBase(t *testing.T) {
 	type args struct {
 		ctx  context.Context
 		temp [][]string
@@ -392,20 +391,6 @@ func Test_Rander(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "ctx with de",
-			args: args{
-				ctx: deadlinectx,
-				temp: [][]string{
-					{"Test"},
-					{"{{range rows}}"},
-					{"string", `{{s}}`},
-					{"{{end}}"},
-				},
-				data: nil,
-			},
-			wantErr: true,
-		},
-		{
 			name: "render chan map[string]interface{}",
 			args: args{
 				temp: [][]string{
@@ -490,6 +475,185 @@ func Test_Rander(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			bs, err := writeExcelHelper(tt.args.temp)
+			if err != nil {
+				t.Error(err)
+			}
+			xl, err := NewFromBinary(bs)
+			if err != nil {
+				t.Error(err)
+			}
+			if err = xl.Render(tt.args.ctx, tt.args.data); err != nil && tt.wantErr {
+				return
+			} else if err == nil && !tt.wantErr {
+			} else {
+				t.Error(fmt.Printf("About error: Except %v != %v", tt.wantErr, err == nil))
+			}
+			result := xl.Result()
+			// ioutil.WriteFile(tt.name+".xlsx", result.Bytes(), os.ModePerm)
+			if err = checkExcelHelper(result.Bytes(), tt.wantRes); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func Test_RenderFunc(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "single", true)
+	type args struct {
+		ctx  context.Context
+		temp [][]string
+		data interface{}
+	}
+	tests := []struct {
+		name    string
+		helper  map[string]interface{}
+		args    args
+		wantRes [][]string
+		wantErr bool
+	}{
+		{
+			name:   "Render with func and no data.",
+			helper: map[string]interface{}{"exist": func(s string) string { return "true" }},
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{exist "c"}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{}, {}, {},
+					},
+				},
+			},
+			wantRes: [][]string{
+				{"Test"},
+				{"string", "true"},
+				{"string", "true"},
+				{"string", "true"},
+			},
+		},
+		{
+			name: "Render with func.",
+			helper: map[string]interface{}{"is": func(flag, t, f, value string) string {
+				if value == flag {
+					return t
+				}
+				return f
+			}},
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{is "hello" "t" "f" k}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{"k": "hello"}, {"k": "hi"},
+					},
+				},
+			},
+			wantRes: [][]string{
+				{"Test"},
+				{"string", "t"},
+				{"string", "f"},
+			},
+		},
+		{
+			name: "Render with return error func",
+			helper: map[string]interface{}{"error": func(key string) (string, error) {
+				return "", errors.New("error")
+			}},
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{error k}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{"k": "hello"},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Render with no specific func",
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{no_func k}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{"k": "hello"},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name:   "Render with func panic",
+			helper: map[string]interface{}{"error": func(key string) string { panic("error") }},
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{error k}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{"k": "hello"},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "check func with same ctx",
+			helper: map[string]interface{}{"ctx": func(c context.Context, k string) string {
+				if c == ctx {
+					return "true"
+				}
+				return "false"
+			}},
+			args: args{
+				ctx: ctx,
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{ctx k}}`},
+					{"{{end}}"},
+				},
+				data: map[string]interface{}{
+					"rows": []map[string]interface{}{
+						{"k": "hello"},
+					},
+				},
+			},
+			wantRes: [][]string{
+				{"Test"},
+				{"string", "true"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanHelpers()
+			if len(tt.helper) > 0 {
+				for k, v := range tt.helper {
+					RegisterHelper(k, v)
+				}
+			}
+
 			bs, err := writeExcelHelper(tt.args.temp)
 			if err != nil {
 				t.Error(err)
