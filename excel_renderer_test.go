@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/360EntSecGroup-Skylar/excelize"
+	"github.com/360EntSecGroup-Skylar/excelize/v2"
 )
 
 func writeExcelHelper(data [][]string) ([]byte, error) {

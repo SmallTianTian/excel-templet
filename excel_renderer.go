@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"regexp"
 
-	"github.com/360EntSecGroup-Skylar/excelize"
+	"github.com/360EntSecGroup-Skylar/excelize/v2"
 	"github.com/SmallTianTian/go-tools/slice"
 )
 
