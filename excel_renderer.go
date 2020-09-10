@@ -145,7 +145,6 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 				return 0, err
 			} else {
 				renderLine += rl
-				rowOffset += rl
 			}
 			w += end
 			w++

@@ -439,6 +439,74 @@ func Test_RenderBase(t *testing.T) {
 			},
 		},
 		{
+			name: "render range with paralleling range",
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{s}}`},
+					{"{{end}}"},
+					{"{{c}}"},
+					{"{{range d}}"},
+					{"string", `{{s}}`},
+					{"{{end}}"},
+					{"{{e}}"},
+				},
+				data: map[string]interface{}{
+					"rows": map2InterChanHelper([]interface{}{
+						map[string]string{"s": "s1", "d": "d1"},
+						map[string]string{"s": "s2", "d": "d2"},
+						map[string]string{"s": "s3", "d": "d3"},
+					}),
+					"c": "d",
+					"d": map2InterChanHelper([]interface{}{
+						map[string]string{"s": "s4", "d": "d4"},
+						map[string]string{"s": "s5", "d": "d5"},
+						map[string]string{"s": "s6", "d": "d6"},
+					}),
+					"e": "f",
+				},
+			},
+			wantRes: [][]string{
+				{"Test"},
+				{"string", "s1"},
+				{"string", "s2"},
+				{"string", "s3"},
+				{"d"},
+				{"string", "s4"},
+				{"string", "s5"},
+				{"string", "s6"},
+				{"f"},
+			},
+		},
+		{
+			name: "render range and no range date.",
+			args: args{
+				temp: [][]string{
+					{"Test"},
+					{"{{range rows}}"},
+					{"string", `{{s}}`},
+					{"{{end}}"},
+					{"{{c}}"},
+				},
+				data: map[string]interface{}{
+					"rows": map2InterChanHelper([]interface{}{
+						map[string]string{"s": "s1", "d": "d1"},
+						map[string]string{"s": "s2", "d": "d2"},
+						map[string]string{"s": "s3", "d": "d3"},
+					}),
+					"c": "d",
+				},
+			},
+			wantRes: [][]string{
+				{"Test"},
+				{"string", "s1"},
+				{"string", "s2"},
+				{"string", "s3"},
+				{"d"},
+			},
+		},
+		{
 			name: "render chan interface{} with interface{} not map",
 			args: args{
 				temp: [][]string{
