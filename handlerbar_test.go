@@ -402,22 +402,191 @@ func Test_interface2AppointType(t *testing.T) {
 			},
 			wantResult: reflect.ValueOf("true"),
 		},
+		{
+			name: "nil2map[string]int",
+			args: args{
+				t: reflect.TypeOf(map[string]int{}),
+			},
+			wantResult: reflect.ValueOf(map[string]int{}),
+		},
+		{
+			name: "nil2map[int]string",
+			args: args{
+				t: reflect.TypeOf(map[int]string{}),
+			},
+			wantResult: reflect.ValueOf(map[int]string{}),
+		},
+		{
+			name: "int82map[string]string",
+			args: args{
+				i: int8(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "int162map[string]string",
+			args: args{
+				i: int16(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "int322map[string]string",
+			args: args{
+				i: int32(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "int642map[string]string",
+			args: args{
+				i: int64(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "int2map[string]string",
+			args: args{
+				i: int(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uint82map[string]string",
+			args: args{
+				i: uint8(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uint162map[string]string",
+			args: args{
+				i: uint16(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uint322map[string]string",
+			args: args{
+				i: uint32(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uint642map[string]string",
+			args: args{
+				i: uint64(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uint2map[string]string",
+			args: args{
+				i: uint(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "uintptr2map[string]string",
+			args: args{
+				i: uintptr(8),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "bool2map[string]string",
+			args: args{
+				i: true,
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "float322map[string]string",
+			args: args{
+				i: float32(1.23),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "float642map[string]string",
+			args: args{
+				i: float64(1.23),
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "not_json_string2map[string]string",
+			args: args{
+				i: "this is not json.",
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "not_match_type_json_string2map[string]string",
+			args: args{
+				i: `{"key":123}`,
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "json_string2map[string]int",
+			args: args{
+				i: `{"key":123}`,
+				t: reflect.TypeOf(map[string]int{}),
+			},
+			wantResult: reflect.ValueOf(map[string]int{"key": 123}),
+		},
+		{
+			name: "not_match_type_map2map[string]int",
+			args: args{
+				i: map[string]string{"key": "123"},
+				t: reflect.TypeOf(map[string]int{}),
+			},
+			wantErr: true,
+		},
+		{
+			name: "map2map[string]string",
+			args: args{
+				i: map[string]string{"key": "123"},
+				t: reflect.TypeOf(map[string]string{}),
+			},
+			wantResult: reflect.ValueOf(map[string]string{"key": "123"}),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotResult, err := interface2AppointType(tt.args.i, tt.args.t)
+			if err != nil && tt.wantErr {
+				return
+			}
 			if (err != nil) != tt.wantErr {
 				t.Errorf("interface2AppointType() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(gotResult.Interface(), tt.wantResult.Interface()) {
-				t.Errorf("interface2AppointType() = %v, want %v", gotResult.Interface(), tt.wantResult.Interface())
+				t.Errorf("interface2AppointType() = (%T)%v, want (%T)%v", gotResult.Interface(), gotResult.Interface(), tt.wantResult.Interface(), tt.wantResult.Interface())
 			}
 		})
 	}
 }
 
-func Test_isBaseType(t *testing.T) {
+func Test_isSupportType(t *testing.T) {
 	type args struct{}
 	i := 1
 	tests := []struct {
@@ -501,8 +670,14 @@ func Test_isBaseType(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "map not!!!",
+			name: "map",
 			args: map[string]int{},
+			want: true,
+		},
+		{
+			name: "map int",
+			args: map[int]int{},
+			want: true,
 		},
 		{
 			name: "slice not!!!",
@@ -523,8 +698,8 @@ func Test_isBaseType(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isBaseType(reflect.TypeOf(tt.args)); got != tt.want {
-				t.Errorf("isBaseType() = %v, want %v", got, tt.want)
+			if got := isSupportType(reflect.TypeOf(tt.args)); got != tt.want {
+				t.Errorf("isSupportType() = %v, want %v", got, tt.want)
 			}
 		})
 	}

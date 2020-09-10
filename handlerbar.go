@@ -2,6 +2,7 @@ package xlsxt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -69,7 +70,7 @@ func new(v reflect.Value) (*helper, error) {
 
 	// check out type
 	if h.outV != nil {
-		if !isBaseType(h.outV) {
+		if !isSupportType(h.outV) {
 			return nil, fmt.Errorf("Return value not base type: %v", h.outV)
 		}
 	}
@@ -85,7 +86,7 @@ func new(v reflect.Value) (*helper, error) {
 		inv := v.Type().In(i)
 
 		// check in type
-		if !isBaseType(inv) {
+		if !isSupportType(inv) {
 			return nil, fmt.Errorf("In value not base type: index:%d, %v", i, inv)
 		}
 
@@ -199,16 +200,30 @@ func interface2AppointType(i interface{}, t reflect.Type) (result reflect.Value,
 			i = float64(0)
 		case reflect.String:
 			i = ""
+		case reflect.Map:
+			i = reflect.MakeMap(t).Interface()
 		}
 	}
 
 	v := reflect.ValueOf(i)
-	if v.Kind() == t.Kind() {
+	if v.Type() == t {
 		return v, nil
 	}
 	if t.Kind() == reflect.String {
-		return reflect.ValueOf(fmt.Sprintf("%v", i)), nil
+		bs, err := json.Marshal(i)
+		if err != nil {
+			return v, nil
+		}
+		return reflect.ValueOf(string(bs)), nil
 	}
+	if v.Kind() == reflect.Map {
+		bs, err := json.Marshal(i)
+		if err != nil {
+			return v, fmt.Errorf("%v couldn't marshal.", i)
+		}
+		v = reflect.ValueOf(string(bs))
+	}
+
 	var (
 		bb, ib, ub, fb, sb bool
 		b                  bool
@@ -309,17 +324,23 @@ func interface2AppointType(i interface{}, t reflect.Type) (result reflect.Value,
 		case fb:
 			result.SetFloat(f64)
 		}
+	case reflect.Map:
+		if !sb {
+			return v, fmt.Errorf("%v couldn't convert to map.", i)
+		}
+		err = json.Unmarshal([]byte(s), result.Addr().Interface())
 	}
 	return
 }
 
-func isBaseType(t reflect.Type) bool {
+func isSupportType(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64,
-		reflect.String:
+		reflect.String,
+		reflect.Map:
 		return true
 	default:
 		return false
