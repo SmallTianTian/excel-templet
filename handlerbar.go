@@ -495,7 +495,12 @@ func (wp *walkParse) dealFunc() (p *parm, err error) {
 			parse.ps = append(parse.ps, *p)
 		}
 	}
-	p = &parm{t: function, v: parse}
+
+	if len(parse.ps) != len(f.in) {
+		err = fmt.Errorf("Helper(%s) need %d param, now have %d.", k, len(f.in), len(parse.ps))
+	} else {
+		p = &parm{t: function, v: parse}
+	}
 	return
 }
 

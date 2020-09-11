@@ -1061,6 +1061,12 @@ func TestNewParse(t *testing.T) {
 			help: map[string]interface{}{"exist": func(s string) {}},
 			want: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{t: function, v: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{v: "a"}}}}}},
 		},
+		{
+			name:    "function param size not equal in",
+			args:    "{{exist key}}",
+			help:    map[string]interface{}{"exist": func(s, s1 string) {}},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
