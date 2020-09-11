@@ -115,7 +115,7 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 			return 0, RenderCancel
 		}
 
-		if axis, err = excelize.CoordinatesToCellName(1, w+1+rowOffset); err != nil {
+		if axis, err = excelize.CoordinatesToCellName(1, renderLine+1+rowOffset); err != nil {
 			return
 		}
 		cells := rowsData[w]
@@ -141,11 +141,11 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 				w += 2
 				continue
 			}
-			if rl, err := renderRangeRow(ctx, write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
-				return 0, err
-			} else {
-				renderLine += rl
+			var rl int
+			if rl, err = renderRangeRow(ctx, write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
+				return
 			}
+			renderLine += rl
 			w += end
 			w++
 			continue
