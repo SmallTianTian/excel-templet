@@ -437,9 +437,14 @@ func (wp *walkParse) dealFuncParam() (*parm, error) {
 		wp.pcur++
 	}
 	wp.cur = wp.pcur
-	if wp.pEqual('{') {
+	if wp.pEqual('{') && wp.nextPEqual('{') {
 		return wp.dealFunc()
 	}
+	// not deal
+	if wp.pEqual('}') && wp.nextPEqual('}') {
+		return nil, nil
+	}
+
 	p := &parm{t: key}
 	if wp.pEqual('"') {
 		wp.pcur++
@@ -486,7 +491,9 @@ func (wp *walkParse) dealFunc() (p *parm, err error) {
 		if p, err = wp.dealFuncParam(); err != nil {
 			return
 		}
-		parse.ps = append(parse.ps, *p)
+		if p != nil {
+			parse.ps = append(parse.ps, *p)
+		}
 	}
 	p = &parm{t: function, v: parse}
 	return

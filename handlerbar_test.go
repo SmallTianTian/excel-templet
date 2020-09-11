@@ -1037,6 +1037,30 @@ func TestNewParse(t *testing.T) {
 			help:    map[string]interface{}{"exist": func(s, s1 string) {}},
 			wantErr: true,
 		},
+		{
+			name: "function first key with single {",
+			args: `{{exist {key key}}`,
+			help: map[string]interface{}{"exist": func(s, s1 string) {}},
+			want: &Parse{f: wrapHelper(func(s, s1 string) {}), ps: []parm{{t: key, v: "{key"}, {t: key, v: "key"}}},
+		},
+		{
+			name: "function param(value) end with blank",
+			args: `{{exist "value" }}`,
+			help: map[string]interface{}{"exist": func(s string) {}},
+			want: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{t: general, v: "value"}}},
+		},
+		{
+			name: "function param(key) end with blank",
+			args: `{{exist key }}`,
+			help: map[string]interface{}{"exist": func(s string) {}},
+			want: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{t: key, v: "key"}}},
+		},
+		{
+			name: "function param(function) end with blank",
+			args: `{{exist {{exist "a"}} }}`,
+			help: map[string]interface{}{"exist": func(s string) {}},
+			want: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{t: function, v: &Parse{f: wrapHelper(func(s string) {}), ps: []parm{{v: "a"}}}}}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
