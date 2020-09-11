@@ -14,7 +14,7 @@ var (
 	typeOfError   = reflect.TypeOf((*error)(nil)).Elem()
 	typeOfContext = reflect.TypeOf((*context.Context)(nil)).Elem()
 	typeOfString  = reflect.TypeOf("")
-	noStart       = errors.New("no")
+	funcNoStart   = errors.New("function without start")
 	funcNoKey     = errors.New("function without valid key")
 	funcNoEnd     = errors.New("function without end")
 )
@@ -402,7 +402,7 @@ func (wp *walkParse) nextParm() (*parm, error) {
 
 	// cloudn't start with `}}`
 	if wp.nextPEqual('}') {
-		return nil, noStart
+		return nil, funcNoStart
 	}
 
 	if wp.nextPEqual('{') {
