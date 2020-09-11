@@ -113,11 +113,22 @@ type parm struct {
 	v interface{}
 }
 
-func (p *parm) exec(ctx context.Context, in map[string]interface{}) (interface{}, error) {
+func (p *parm) exec(ctx context.Context, in map[string]interface{}) (result interface{}, err error) {
 	switch p.t {
 	case general:
 		return p.v, nil
 	case key:
+		if strings.Contains(p.v.(string), ".") {
+			result = in
+			for _, key := range strings.Split(p.v.(string), ".") {
+				if in, err = toStringKeyMap(result); err != nil || in == nil {
+					return
+				}
+				result = in[key]
+			}
+			return
+		}
+
 		return in[p.v.(string)], nil
 	case function:
 		return p.v.(*Parse).Exec(ctx, in)

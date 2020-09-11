@@ -723,6 +723,43 @@ func TestParse_Exec(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			name: "no func, only general string.",
+			fields: fields{
+				ps: []parm{{v: "s"}},
+			},
+			wantRv: "s",
+		},
+		{
+			name: "no func, only key.",
+			fields: fields{
+				ps: []parm{{t: key, v: "key"}},
+			},
+			args: args{
+				in: map[string]interface{}{"key": "value"},
+			},
+			wantRv: "value",
+		},
+		{
+			name: "no func, key value is map.",
+			fields: fields{
+				ps: []parm{{t: key, v: "key"}},
+			},
+			args: args{
+				in: map[string]interface{}{"key": map[string]string{"a": "b"}},
+			},
+			wantRv: `{"a":"b"}`,
+		},
+		{
+			name: "no func, key is json recursion get.",
+			fields: fields{
+				ps: []parm{{t: key, v: "key.a"}},
+			},
+			args: args{
+				in: map[string]interface{}{"key": map[string]string{"a": "b"}},
+			},
+			wantRv: `b`,
+		},
+		{
 			name: "no in retun string",
 			fields: fields{
 				f:  wrapHelper(func() string { return "string" }),
