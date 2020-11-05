@@ -33,6 +33,12 @@ var (
 type Xlsxt struct {
 	file *excelize.File
 	buf  bytes.Buffer
+
+	// private
+	ctx          context.Context
+	cacheRender  map[string]*Parse
+	sheetData    map[string]interface{}
+	curSheetData map[string]interface{}
 }
 
 func NewFromBinary(content []byte) (res *Xlsxt, err error) {
@@ -40,18 +46,21 @@ func NewFromBinary(content []byte) (res *Xlsxt, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Xlsxt{file: f}, nil
+	return &Xlsxt{file: f, cacheRender: make(map[string]*Parse)}, nil
 }
 
 // Render renders report and stores it in a struct
 func (m *Xlsxt) Render(ctx context.Context, in interface{}) (err error) {
-	ctx = context.WithValue(context.Background(), ctxCacheKey, ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.ctx = ctx
 	skm, err := toStringKeyMap(in)
 	if err != nil {
 		return err
 	}
 
-	m.buf, err = defaultRender(ctx, m.file, skm)
+	m.buf, err = m.defaultRender(skm)
 	return
 }
 
@@ -59,10 +68,9 @@ func (m *Xlsxt) Result() bytes.Buffer {
 	return m.buf
 }
 
-func defaultRender(ctx context.Context, temp *excelize.File, data map[string]interface{}) (buf bytes.Buffer, err error) {
+func (m *Xlsxt) defaultRender(data map[string]interface{}) (buf bytes.Buffer, err error) {
 	f := excelize.NewFile()
-	sns := temp.GetSheetList()
-	ctx = context.WithValue(ctx, renderCacheKey, make(map[string]*Parse))
+	sns := m.file.GetSheetList()
 	for _, sn := range sns {
 		var (
 			baseColWidth     excelize.BaseColWidth
@@ -73,7 +81,7 @@ func defaultRender(ctx context.Context, temp *excelize.File, data map[string]int
 			thickTop         excelize.ThickTop
 			thickBottom      excelize.ThickBottom
 		)
-		if err = temp.GetSheetFormatPr(sn, &baseColWidth, &defaultColWidth, &defaultRowHeight, &customHeight, &zeroHeight, &thickTop, &thickBottom); err != nil {
+		if err = m.file.GetSheetFormatPr(sn, &baseColWidth, &defaultColWidth, &defaultRowHeight, &customHeight, &zeroHeight, &thickTop, &thickBottom); err != nil {
 			return
 		}
 		var ssw *excelize.StreamWriter
@@ -85,18 +93,16 @@ func defaultRender(ctx context.Context, temp *excelize.File, data map[string]int
 		}
 		// TODO get all rows height?
 		var rowsData [][]string
-		if rowsData, err = temp.GetRows(sn); err != nil {
+		if rowsData, err = m.file.GetRows(sn); err != nil {
 			return
 		}
 
-		var sheetData map[string]interface{}
-		if sheetData, err = getSheetData(data, sn, sns); err != nil {
+		if m.sheetData, err = getSheetData(data, sn, sns); err != nil {
 			return
 		}
-		sheetCtx := context.WithValue(ctx, sheetDataKey, sheetData)
 		// remove current sheet data in other sheet
 		delete(data, sn)
-		if _, err = renderRows(sheetCtx, ssw, rowsData, 0); err != nil {
+		if _, err = m.renderRows(ssw, rowsData, 0); err != nil {
 			return
 		}
 		if err = ssw.Flush(); err != nil {
@@ -108,10 +114,10 @@ func defaultRender(ctx context.Context, temp *excelize.File, data map[string]int
 	return *b, e
 }
 
-func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]string, rowOffset int) (renderLine int, err error) {
+func (m *Xlsxt) renderRows(write *excelize.StreamWriter, rowsData [][]string, rowOffset int) (renderLine int, err error) {
 	var axis string
 	for w := 0; w < len(rowsData); {
-		if ctx.Err() != nil {
+		if m.ctx.Err() != nil {
 			return 0, RenderCancel
 		}
 
@@ -142,7 +148,7 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 				continue
 			}
 			var rl int
-			if rl, err = renderRangeRow(ctx, write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
+			if rl, err = m.renderRangeRow(write, rangeKey, rowsData[w+1:w+end], w+rowOffset); err != nil {
 				return
 			}
 			renderLine += rl
@@ -155,7 +161,7 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 		rowResultData := make([]interface{}, 0, len(rowsData[w]))
 		for _, item := range rowsData[w] {
 			var cellResult *excelize.Cell
-			if cellResult, err = renderCells(ctx, item); err != nil {
+			if cellResult, err = m.renderCells(item); err != nil {
 				return
 			}
 			rowResultData = append(rowResultData, cellResult)
@@ -167,23 +173,22 @@ func renderRows(ctx context.Context, write *excelize.StreamWriter, rowsData [][]
 	return
 }
 
-func renderRangeRow(ctx context.Context, write *excelize.StreamWriter, rangeKey string, rowsData [][]string, offset int) (renderLine int, err error) {
-	sD := ctx.Value(sheetDataKey).(map[string]interface{})
-	rangeD, has := sD[rangeKey]
+func (m *Xlsxt) renderRangeRow(write *excelize.StreamWriter, rangeKey string, rowsData [][]string, offset int) (renderLine int, err error) {
+	rangeD, has := m.sheetData[rangeKey]
 	// no valid render data
 	if !has {
 		return len(rowsData), nil
 	}
-	ori := excludeKeyMap(sD, rangeKey)
+	m.curSheetData = excludeKeyMap(m.sheetData, rangeKey)
 
 	dc := getChanKeyMap(rangeD)
 	for i := 0; ; i++ {
 		if v, ok := <-dc; !ok {
 			break
 		} else {
-			ctx = context.WithValue(ctx, sheetDataKey, mergeMap(ori, v))
+			m.curSheetData = mergeMap(m.curSheetData, v)
 
-			l, err := renderRows(ctx, write, rowsData, offset)
+			l, err := m.renderRows(write, rowsData, offset)
 			if err != nil {
 				return 0, err
 			}
@@ -194,27 +199,22 @@ func renderRangeRow(ctx context.Context, write *excelize.StreamWriter, rangeKey 
 	return
 }
 
-func renderCells(ctx context.Context, tlp string) (a *excelize.Cell, err error) {
-	cacheRender := ctx.Value(renderCacheKey).(map[string]*Parse)
-	sD := ctx.Value(sheetDataKey).(map[string]interface{})
+func (m *Xlsxt) renderCells(tlp string) (a *excelize.Cell, err error) {
+
 	defer func() {
 		if e := recover(); e != nil {
 			err = fmt.Errorf("code: 20002, UNKNOW ERR. %v", e)
 		}
 	}()
-	if _, in := cacheRender[tlp]; !in {
-		if cacheRender[tlp], err = NewParse(tlp); err != nil {
+	if _, in := m.cacheRender[tlp]; !in {
+		if m.cacheRender[tlp], err = NewParse(tlp); err != nil {
 			return
 		}
 	}
-	tp := cacheRender[tlp]
+	tp := m.cacheRender[tlp]
 	var v interface{}
 
-	// reset ctx
-	if ctx.Value(ctxCacheKey) != nil {
-		ctx, _ = ctx.Value(ctxCacheKey).(context.Context)
-	}
-	if v, err = tp.Exec(ctx, sD); err != nil {
+	if v, err = tp.Exec(m.ctx, m.curSheetData); err != nil {
 		return
 	}
 	return &excelize.Cell{Value: v}, nil
